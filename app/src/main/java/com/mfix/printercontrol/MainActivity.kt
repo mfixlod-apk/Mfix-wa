@@ -21,9 +21,7 @@ class MainActivity : Activity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == permissionAction) {
-                val dev = if (Build.VERSION.SDK_INT >= 33)
-                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                else @Suppress("DEPRECATION") intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                val dev = getUsbDeviceFromIntent(intent)
                 if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && dev != null) openPrinter(dev)
                 else showStatus("לא אושרה הרשאת USB")
             }
@@ -33,11 +31,23 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usb = getSystemService(USB_SERVICE) as UsbManager
-        val filter = IntentFilter(permissionAction)
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
-        else @Suppress("DEPRECATION") registerReceiver(receiver, filter)
+        registerUsbPermissionReceiver()
         makeUi()
         connectUsb()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun registerUsbPermissionReceiver() {
+        val filter = IntentFilter(permissionAction)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
+        else registerReceiver(receiver, filter)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getUsbDeviceFromIntent(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= 33)
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        else intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
     }
 
     private fun makeUi() {
