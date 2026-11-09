@@ -13,6 +13,8 @@ class MainActivity : Activity() {
     private var conn: UsbDeviceConnection? = null
     private var endpoint: UsbEndpoint? = null
     private var intf: UsbInterface? = null
+    private var usbDetails = ""
+    @Volatile private var transferError = ""
     private lateinit var status: TextView
     private lateinit var heatValue: TextView
     private var heating = 60
@@ -118,15 +120,19 @@ class MainActivity : Activity() {
     private fun connectUsb() {
         val devices = usb.deviceList.values
         if (devices.isEmpty()) { showStatus("לא זוהתה מדפסת. בדוק כבל USB OTG והפעלה."); return }
-        val dev = devices.firstOrNull { d ->
+        fun hasBulkOut(d: UsbDevice, printerOnly: Boolean): Boolean =
             (0 until d.interfaceCount).any { i ->
-                val f = d.getInterface(i)
-                (0 until f.endpointCount).any { e ->
-                    f.getEndpoint(e).direction == UsbConstants.USB_DIR_OUT &&
-                    f.getEndpoint(e).type == UsbConstants.USB_ENDPOINT_XFER_BULK
-                }
+                val face = d.getInterface(i)
+                (!printerOnly || face.interfaceClass == UsbConstants.USB_CLASS_PRINTER) &&
+                    (0 until face.endpointCount).any { e ->
+                        val ep = face.getEndpoint(e)
+                        ep.direction == UsbConstants.USB_DIR_OUT &&
+                            ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK
+                    }
             }
-        } ?: devices.first()
+        val dev = devices.firstOrNull { hasBulkOut(it, true) }
+            ?: devices.firstOrNull { hasBulkOut(it, false) }
+            ?: devices.first()
         showStatus("נמצא USB VID=${dev.vendorId}, PID=${dev.productId}. מבקש הרשאה...")
         if (usb.hasPermission(dev)) openPrinter(dev) else {
             val intent = Intent(permissionAction).setPackage(packageName)
@@ -138,20 +144,22 @@ class MainActivity : Activity() {
 
     private fun openPrinter(dev: UsbDevice) {
         closePrinter()
-        for (i in 0 until dev.interfaceCount) {
-            val face = dev.getInterface(i)
+        val candidates = (0 until dev.interfaceCount).map { dev.getInterface(it) }
+            .sortedBy { if (it.interfaceClass == UsbConstants.USB_CLASS_PRINTER) 0 else 1 }
+        for (face in candidates) {
             val out = (0 until face.endpointCount).map { face.getEndpoint(it) }.firstOrNull {
                 it.direction == UsbConstants.USB_DIR_OUT && it.type == UsbConstants.USB_ENDPOINT_XFER_BULK
             } ?: continue
             val c = usb.openDevice(dev)
             if (c != null && c.claimInterface(face, true)) {
                 conn = c; endpoint = out; intf = face
-                showStatus("מחובר למדפסת USB. אפשר להדפיס.")
+                usbDetails = "VID=${dev.vendorId} PID=${dev.productId}, class=${face.interfaceClass}, interface=${face.id}, endpoint=0x${out.address.toString(16)}, packet=${out.maxPacketSize}"
+                showStatus("USB נפתח. $usbDetails")
                 return
             }
             c?.close()
         }
-        showStatus("התקן זוהה, אך לא נפתח ערוץ USB להדפסה.")
+        showStatus("התקן זוהה, אך לא נפתח ערוץ USB להדפסה. בדוק הרשאה/ממשק.")
     }
 
     private fun closePrinter() {
@@ -167,7 +175,10 @@ class MainActivity : Activity() {
         while (pos < data.size) {
             val chunk = data.copyOfRange(pos, minOf(pos + 2048, data.size))
             val n = c.bulkTransfer(ep, chunk, chunk.size, 5000)
-            if (n <= 0) return false
+            if (n <= 0) {
+                transferError = "bulkTransfer החזיר $n; endpoint=0x${ep.address.toString(16)}, packet=${ep.maxPacketSize}, bytes=${chunk.size}, $usbDetails"
+                return false
+            }
             pos += n
         }
         return true
@@ -185,9 +196,13 @@ class MainActivity : Activity() {
                 "THE QUICK BROWN FOX 0123456789\n" +
                 "||||||||||||||||||||||||||||||||\n" +
                 "--------------------------------\n\n\n").toByteArray(Charset.forName("CP437"))
-            val ok = send(reset) && (heat.isEmpty() || send(heat)) && send(sample) &&
-                send(byteArrayOf(0x1D, 0x56, 0x00))
-            runOnUiThread { showStatus(if (ok) "דף הבדיקה נשלח." else "שליחה נכשלה. בדוק חיבור USB.") }
+            transferError = ""
+            val result = if (!send(reset)) "נכשל באיפוס: $transferError"
+                else if (heat.isNotEmpty() && !send(heat)) "נכשל בפקודת חימום: $transferError"
+                else if (!send(sample)) "נכשל בשליחת הטקסט: $transferError"
+                else if (!send(byteArrayOf(0x1D, 0x56, 0x00))) "הטקסט נשלח, אך חיתוך נכשל: $transferError"
+                else "דף הבדיקה נשלח בהצלחה. $usbDetails"
+            runOnUiThread { showStatus(result) }
         }.start()
     }
 
