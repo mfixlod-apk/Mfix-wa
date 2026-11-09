@@ -28,7 +28,7 @@ jobs:
       - name: Install required Android SDK packages
         run: |
           sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          sdkmanager --licenses
+          yes | sdkmanager --licenses
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
