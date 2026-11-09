@@ -17,7 +17,10 @@ class MainActivity : Activity() {
     @Volatile private var transferError = ""
     private lateinit var status: TextView
     private lateinit var heatValue: TextView
-    private var heating = 60
+    private var heatDots = 9
+    private var heatingTime = 80
+    private var heatInterval = 2
+    private val prefs by lazy { getSharedPreferences("printer_profile", MODE_PRIVATE) }
     private val permissionAction = "com.mfix.printercontrol.USB_PERMISSION"
 
     private val receiver = object : BroadcastReceiver() {
@@ -34,6 +37,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         usb = getSystemService(USB_SERVICE) as UsbManager
         registerUsbPermissionReceiver()
+        heatDots = prefs.getInt("heat_dots", 9).coerceIn(1, 16)
+        heatingTime = prefs.getInt("heat_time", 80).coerceIn(40, 120)
+        heatInterval = prefs.getInt("heat_interval", 2).coerceIn(1, 10)
         makeUi()
         connectUsb()
     }
@@ -78,24 +84,22 @@ class MainActivity : Activity() {
         body.addView(button("הדפס דף בדיקה רגיל") { printTest(false) })
         body.addView(button("הדפס דף בדיקת חימום") { printTest(true) })
         body.addView(TextView(this).apply {
-            text = "עוצמת חימום – ניסיוני"
+            text = "פרמטרים תרמיים – ESC/POS (ניסיוני)"
             textSize = 19f; setTextColor(0xFF111827.toInt()); setPadding(0, 20, 0, 6)
         })
-        heatValue = TextView(this).apply { textSize = 16f }
+        heatValue = TextView(this).apply { textSize = 15f }
         body.addView(heatValue)
-        body.addView(SeekBar(this).apply {
-            max = 40; progress = 20
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, p: Int, user: Boolean) {
-                    heating = 40 + p; heatValue.text = "זמן חימום: $heating"
-                }
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
-            })
+        addSettingSlider(body, "N1 – מספר נקודות חימום (1–16)", 1, 16, heatDots) { heatDots = it; updateHeatLabel() }
+        addSettingSlider(body, "N2 – זמן חימום (40–120; יחידות 10µs)", 40, 120, heatingTime) { heatingTime = it; updateHeatLabel() }
+        addSettingSlider(body, "N3 – מרווח חימום (1–10; יחידות 10µs)", 1, 10, heatInterval) { heatInterval = it; updateHeatLabel() }
+        body.addView(button("שמור הגדרות מדפסת") { saveProfile() })
+        body.addView(button("אפס לערכי ברירת מחדל") {
+            heatDots = 9; heatingTime = 80; heatInterval = 2
+            saveProfile(); makeUi()
         })
-        heatValue.text = "זמן חימום: $heating"
+        updateHeatLabel()
         body.addView(TextView(this).apply {
-            text = "הערה: ESC 7 היא פקודת הגדרת חימום כללית בחלק ממדפסות ESC/POS, אך לא אומתה לכל גרסאות הקושחה של N160II. השינוי נשלח לפני דף הבדיקה בלבד. התחל בערך 60 ואל תעלה בחדות."
+            text = "הערה חשובה: ESC 7 מתועד בחלק ממדפסות ESC/POS כפקודה עם N1/N2/N3. ערכי ברירת המחדל המוצגים הם ערכי ייחוס נפוצים, אך לא אומתו מול כל גרסאות הקושחה של XP-N160II. העלאת זמן החימום עשויה להכהות ולהאט את ההדפסה וגם להגדיל את חימום הראש. בדוק בהדרגה והפסק אם יש התחממות חריגה."
             textSize = 13f; setTextColor(0xFF92400E.toInt()); setPadding(8, 10, 8, 16)
         })
         body.addView(TextView(this).apply {
@@ -116,6 +120,29 @@ class MainActivity : Activity() {
     }
 
     private fun showStatus(s: String) { status.text = s }
+
+    private fun addSettingSlider(parent: LinearLayout, label: String, min: Int, max: Int, initial: Int, changed: (Int) -> Unit) {
+        parent.addView(TextView(this).apply { text = label; textSize = 14f; setTextColor(0xFF374151.toInt()); setPadding(0, 10, 0, 0) })
+        parent.addView(SeekBar(this).apply {
+            this.max = max - min; progress = initial - min
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, user: Boolean) { changed(min + p) }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        })
+    }
+
+    private fun updateHeatLabel() {
+        if (::heatValue.isInitialized) heatValue.text = "ערכים נוכחיים: N1=$heatDots | N2=$heatingTime | N3=$heatInterval"
+    }
+
+    private fun saveProfile() {
+        prefs.edit().putInt("heat_dots", heatDots).putInt("heat_time", heatingTime)
+            .putInt("heat_interval", heatInterval).apply()
+        if (::heatValue.isInitialized) updateHeatLabel()
+        Toast.makeText(this, "הגדרות המדפסת נשמרו במכשיר", Toast.LENGTH_SHORT).show()
+    }
 
     private fun connectUsb() {
         val devices = usb.deviceList.values
@@ -188,9 +215,9 @@ class MainActivity : Activity() {
         if (conn == null) { connectUsb(); Toast.makeText(this, "חבר תחילה את המדפסת", Toast.LENGTH_SHORT).show(); return }
         Thread {
             val reset = byteArrayOf(0x1B, 0x40)
-            val heat = if (withHeat) byteArrayOf(0x1B, 0x37, heating.toByte(), 7, 50) else byteArrayOf()
+            val heat = if (withHeat) byteArrayOf(0x1B, 0x37, heatDots.toByte(), heatingTime.toByte(), heatInterval.toByte()) else byteArrayOf()
             val sample = ("\nMFIX PRINTER TEST\nXP-N160II / USB\n" +
-                (if (withHeat) "Heating value: $heating\n" else "Default profile\n") +
+                (if (withHeat) "ESC7 N1=$heatDots N2=$heatingTime N3=$heatInterval\n" else "Printer defaults\n") +
                 "--------------------------------\n" +
                 "1234567890 ABCDEFGHIJ\n" +
                 "THE QUICK BROWN FOX 0123456789\n" +
